@@ -20,10 +20,11 @@ library(hrbrthemes) #For boxplot
 
 # Variables
 #------------------------------------------------------------------------------
-getNewResults <- F #Choose if new results are to be calculated or if plots should be created from previous results
+getNewResults <- T #Choose if new results are to be calculated or if plots should be created from previous results
 dataFolder <- "data"
 outputFolder = paste0(Sys.Date(), "_plot_output") #The outputfolder to be created
-readFromFolder = "2023-08-31_data_output" #If getNewResults is false then read previous results from this folder. Otherwise this variable is not used. 
+outputFolder = "2023-12-14_data_output"
+readFromFolder = "2023-12-14_data_output" #If getNewResults is false then read previous results from this folder. Otherwise this variable is not used. 
 
 #Color scale used in plots
 safe_colorblind_palette <- c("#88CCEE", "#CC6677", "#DDCC77", "#117733", "#332288", "#AA4499", 
@@ -34,8 +35,8 @@ min_cluster_size=1 #Used in silhouette (set to 1 if no restriction)
 resolutions=c(0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05) #Resolutions to be tested
 leiden_iterations = 100 #Number of iteration of the leiden algorithm
 ariYear=2019 #Reviews from this year onward are used
-ariMinTotalRefs=100 #Delimit to reviews with at least n total relations
-ariMinRefsClusterShare=0.5 #Minimum proportion of references within fields for reviews
+ariMinTotalRefs=70 #Delimit to reviews with at least n total relations
+ariMinRefsClusterShare=0.4 #Minimum proportion of references within fields for reviews
 ariOverlapSameTopic=0.3 #This value determines when two reviews should be considered to address the same topic
 #------------------------------------------------------------------------------
 
@@ -59,7 +60,7 @@ options(dplyr.summarise.inform = FALSE) #Do not show group by warning that have 
 #Function to load and cluster data and get some of the results
 #------------------------------------------------------------------------------
 createOutput <- function(pmids_file, relations_file, field_name, consoleFile){
-
+ 
  #Print console to file
  con <- file(consoleFile)
  write(' ', file=con, append=F)
@@ -73,10 +74,10 @@ createOutput <- function(pmids_file, relations_file, field_name, consoleFile){
  #Read files
  pubs <- read.table(pmids_file, header=T)
  relations <- read.table(relations_file, header=T)
-
+ 
  #Remove citations to the same document (some of these exists in the data)
  relations <- unique(relations[relations$citing != relations$cited,])
-
+ 
  #Remove pubs with no relations
  pubs <- pubs[pubs$cnt_relations > 0,]
  pubs <- pubs[pubs$pmid %in% unique(c(relations$citing, relations$cited)),]
@@ -84,7 +85,7 @@ createOutput <- function(pmids_file, relations_file, field_name, consoleFile){
  #Normalize citation relations 
  #============================
  relations$weigth_geo <- 1 / sqrt(relations$cnt_relations_citing * relations$cnt_relations_cited)
-
+ 
  relations$weight_frac <- (1 / relations$cnt_relations_citing + 1 / relations$cnt_relations_cited) / 2
  
  relations$weigth_geo_limit <- 1 / (
@@ -93,11 +94,27 @@ createOutput <- function(pmids_file, relations_file, field_name, consoleFile){
  )
  
  relations$weight_unnormalized <- 1
-
+ 
  relations$weight_directed_frac <- (1 / relations$cnt_citing_refs + 1 / relations$cnt_cited_citations) / 2
-
+ 
  relations$weight_directed_geo  <- 1 / sqrt(relations$cnt_citing_refs * relations$cnt_cited_citations)
-
+ 
+ #We now disregard the direction and put the lowest id first
+ relations$tempciting <- ifelse(relations$citing < relations$cited, relations$citing, relations$cited)
+ relations$tempcited <- ifelse(relations$citing < relations$cited, relations$cited, relations$citing)
+ relations$citing <- relations$tempciting
+ relations$cited <- relations$tempcited
+ 
+ #If i cites j and j cites i use the average of the citation relation
+ relations <- relations %>% group_by(citing, cited) %>% summarise(
+  weight_unnormalized = mean(weight_unnormalized),
+  weight_frac = mean(weight_frac),
+  weigth_geo = mean(weigth_geo), 
+  weigth_geo_limit = mean(weigth_geo_limit), 
+  weight_directed_frac = mean(weight_directed_frac), 
+  weight_directed_geo = mean(weight_directed_geo)
+ )
+ 
  #Normalize to create approximately the same scale
  relations$weight_unnormalized = relations$weight_unnormalized / mean(relations$weight_unnormalized)
  relations$weigth_geo = relations$weigth_geo / mean(relations$weigth_geo)
@@ -105,7 +122,7 @@ createOutput <- function(pmids_file, relations_file, field_name, consoleFile){
  relations$weigth_geo_limit = relations$weigth_geo_limit / mean(relations$weigth_geo_limit)
  relations$weight_directed_frac = relations$weight_directed_frac / mean(relations$weight_directed_frac)
  relations$weight_directed_geo  = relations$weight_directed_geo  / mean(relations$weight_directed_geo )
-
+ 
  #Create graph
  g <- graph_from_data_frame(relations, directed=F, vertices=pubs)
  
@@ -245,7 +262,7 @@ createOutput <- function(pmids_file, relations_file, field_name, consoleFile){
   
   print("---")
  }
-
+ 
  
  print("===================================================")
  print("Directed approach - geo")
@@ -320,7 +337,7 @@ runLeiden <- function(g, w, r, printNetworks=F, name, field_name){
  t <- table(leiden$membership)
  
  t <- data.frame(t)
-
+ 
  #Create histogram
  h <- hist(t$Freq[t$Freq >= 10], breaks=100, plot=F)
  mainname=paste0(field_name, " - Histogram of cluster sizes\n", name, " (resolution=",r,")")
@@ -345,7 +362,7 @@ runLeiden <- function(g, w, r, printNetworks=F, name, field_name){
  print(paste0("Granularity: ", granularity))
  skewness = round(skewness(cluster_count$cluster_size),2)
  print(paste0("Skewness: ", skewness))
-
+ 
  r=list("df"=nodes_clusters, "skewness"=skewness, "granularity"=granularity)
  return(r)
 }
@@ -354,7 +371,7 @@ runLeiden <- function(g, w, r, printNetworks=F, name, field_name){
 #Function to calculate silhouette value of clustering solution
 #------------------------------------------------------------------------------
 getSilhouette <- function(clusters, relations, min_cluster_size){
-
+ 
  clusters <- clusters[!is.na(clusters$cluster),]
  
  r1 <- relations[,c("cited","citing")]
@@ -449,7 +466,7 @@ getInaccurate <- function(dfs,
 #Function to get ARI value of clustering solutions
 #------------------------------------------------------------------------------
 getARI <- function(r, year=ariYear){
-
+ 
  #Get pubs from ariYear onwards
  baseline_pmids <- r$pubs[r$pubs$publication_year > year,]
  
@@ -457,7 +474,7 @@ getARI <- function(r, year=ariYear){
  baseline_pmids <- baseline_pmids[baseline_pmids$cnt_total_refs >= ariMinTotalRefs,]
  baseline_pmids <- baseline_pmids[baseline_pmids$cnt_refs / baseline_pmids$cnt_total_refs >= ariMinRefsClusterShare,]
  baseline_pmids <- unique(baseline_pmids$pmid)
-  
+ 
  print(paste0("Initial number of baseline publications:", length(baseline_pmids)))
  
  if(length(baseline_pmids)>0){
@@ -470,10 +487,10 @@ getARI <- function(r, year=ariYear){
   overlap <- merge(baseline, baseline, by="cited_pmid")
   overlap <- overlap[overlap$review_pmid.x > overlap$review_pmid.y, ]
   overlap2 <- overlap %>% group_by(review_pmid.x,review_pmid.y) %>% summarise("bc" = n())
- 
+  
   #Count refs 
   baseline_no_refs <- baseline %>% group_by(review_pmid) %>% summarise("no_refs" = n())
-   
+  
   overlap2 <- merge(overlap2, baseline_no_refs, by.x="review_pmid.x", by.y="review_pmid")
   overlap2 <- merge(overlap2, baseline_no_refs, by.x="review_pmid.y", by.y="review_pmid")
   
@@ -489,7 +506,7 @@ getARI <- function(r, year=ariYear){
    c_df <- as.data.frame(c$membership)
    names(c_df) <- c("m")
    c_df$pmid <- row.names(c_df)
-    
+   
    rand <- c_df %>% group_by(m) %>% slice_sample(n=1)
    
    #Delete baseline pmids not to be used
@@ -526,7 +543,7 @@ getARI <- function(r, year=ariYear){
    refer_overlapping_to_review <- rank_overlapping_over_reviews[rank_overlapping_over_reviews$rank == 1, ]
    refer_overlapping_to_review <- refer_overlapping_to_review[,1:2]
    names(refer_overlapping_to_review) <- names(baseline)
-    
+   
    baseline <- baseline[!baseline$cited_pmid %in% overlapping_refs$cited_pmid,]
    
    baseline <- rbind(baseline, refer_overlapping_to_review)
@@ -557,7 +574,7 @@ getARI <- function(r, year=ariYear){
 #Function to get ARI from different resolutions
 #------------------------------------------------------------------------------
 calculateARI <- function(dfs, baseline){
-
+ 
  #Vector for the result 
  r_ARI <- c()
  
@@ -609,26 +626,26 @@ getSkewness <- function(dfs){
 #Function to make GA plots
 #------------------------------------------------------------------------------
 plotGA <- function(field_name,
-                      indicator_name,
-                      unnormalized_granularities,
-                      frac_granularities,
-                      geometric_granularities,
-                      geometric_lim5_granularities,
-                      directed_frac_granularities,
-                      directed_geo_granularities,
-                      unnormalized_values, 
-                      frac_values, 
-                      geometric_values,
-                      geometric_lim5_values,
-                      directed_frac_values,
-                      directed_geo_values){
-
+                   indicator_name,
+                   unnormalized_granularities,
+                   frac_granularities,
+                   geometric_granularities,
+                   geometric_lim5_granularities,
+                   directed_frac_granularities,
+                   directed_geo_granularities,
+                   unnormalized_values, 
+                   frac_values, 
+                   geometric_values,
+                   geometric_lim5_values,
+                   directed_frac_values,
+                   directed_geo_values){
+ 
  #Output file
  #png(paste0(outputFolder, "/",field_name, "_", indicator_name,".png"), width=22, height=12, unit="cm", res=600)
  
  #Set margins
  #par(mar=c(5.1, 4.1, 4.1, 14), xpd=TRUE)
-
+ 
  #Get max and min values
  values <- c(unnormalized_values,frac_values,geometric_values,geometric_lim5_values, directed_frac_values, directed_geo_values)
  values[values == Inf] <- NA
@@ -647,7 +664,7 @@ plotGA <- function(field_name,
       xlab="Granularity", 
       ylab=indicator_name,
       cex.lab=1.5, cex.axis=1 # cex.main=2, cex.sub=1.5
-      )
+ )
  xspline(unnormalized_granularities[!is.infinite(unnormalized_values)], unnormalized_values[!is.infinite(unnormalized_values)], lty=1, shape = 1, border=safe_colorblind_palette[1], pch=19)
  points(unnormalized_granularities[!is.infinite(unnormalized_values)], unnormalized_values[!is.infinite(unnormalized_values)], col=safe_colorblind_palette[1])
  xspline(frac_granularities[!is.infinite(frac_values)], frac_values[!is.infinite(frac_values)], lty=1, shape = 1, border=safe_colorblind_palette[2])
@@ -663,18 +680,18 @@ plotGA <- function(field_name,
  title(main=field_name, adj=0, font.main=1, cex.main=2)
  
  #dev.off()
-
+ 
 }
 
 gaPlotToFile <- function(fileName, measure, field_names, rs, approaches, rs_names){
-
+ 
  #Output file
  png(paste0(outputFolder, "/", fileName), width=22, height=25, unit="cm", res=600)
  
  layout(matrix(c(1,2,3,4,5,5), ncol=2, byrow=TRUE), heights=c(4, 4, 2))
  
  par(mai=c(0.7, 0.7, 0.5, 0.1), oma=c(1,1,1,1))
-
+ 
  for(i in 1:length(field_names)){
   plotGA(field_names[i],
          indicator_name=measure,
@@ -716,7 +733,7 @@ createAllPlots <- function(field_names, rs, approaches){
                "directed_geo_silhouttes_means")
  measure = "Silhouette width"
  gaPlotToFile("silhouette_width.png", measure, field_names, rs, approaches, rs_names)
-
+ 
  #Internal citations
  rs_names <- c("unnormalized_internal_citations",
                "frac_internal_citations",
@@ -742,13 +759,13 @@ createAllPlots <- function(field_names, rs, approaches){
                "directed_frac_PIA",
                "directed_geo_PIA")
  gaPlotToFile("probably_inaccurate.png", measure="PIA", field_names, rs, approaches, rs_names)
-
+ 
  #ARI
  r_ari <- list()
  for(i in 1:length(field_names)){
   #Get ARI for each field
   r_ari[[i]] <- getARI(rs[[i]])
-
+  
   rs[[i]]$unnormalized_ARI <- r_ari[[i]]$r_unnormalized_ARI
   rs[[i]]$frac_ARI <- r_ari[[i]]$r_frac_ARI
   rs[[i]]$geometric_ARI <- r_ari[[i]]$r_geometric_ARI
@@ -763,7 +780,7 @@ createAllPlots <- function(field_names, rs, approaches){
                "directed_frac_ARI",
                "directed_geo_ARI")
  gaPlotToFile("ari.png", measure="ARI", field_names, rs, approaches, rs_names)
-
+ 
  # Plot skewness
  for(i in 1:length(field_names)){
   rs[[i]]$unnormalized_skew <- getSkewness(rs[[i]]$unnormalized_item_rel_dfs)
@@ -773,7 +790,7 @@ createAllPlots <- function(field_names, rs, approaches){
   rs[[i]]$directed_frac_skew <- getSkewness(rs[[i]]$directed_frac_item_rel_dfs)
   rs[[i]]$directed_geo_skew <- getSkewness(rs[[i]]$directed_geo_item_rel_dfs)
  }
-
+ 
  rs_names <- c("unnormalized_skew",
                "frac_skew",
                "geometric_skew",
@@ -781,23 +798,23 @@ createAllPlots <- function(field_names, rs, approaches){
                "directed_frac_skew",
                "directed_geo_skew")
  gaPlotToFile("skewness.png", measure="Skewness", field_names, rs, approaches, rs_names)
-
+ 
  #return all values plotted
  #=========================
  df <- data.frame("Field"=character(), "Approach"=character(), "Resolution"=numeric(), "Granularity"=numeric(), "Silhouette width"=numeric(), "Internal citations"=integer(), "PIA"=integer(), "ARI"=numeric(), "Skewness"=numeric())
-
+ 
  for(i in 1:length(field_names)){
-   df_temp <- data.frame("Field"=field_names[i], 
-                    "Approach"="Unnormalized",
-                    "Resolution" = resolutions, 
-                    "Granularity"=rs[[i]]$unnormalized_granularities, 
-                    "Silhouette.width"=rs[[i]]$unnormalized_silhouttes_means,
-                    "Internal.citations"=rs[[i]]$unnormalized_internal_citations,
-                    "PIA"=rs[[i]]$unnormalized_PIA,
-                    "ARI"=rs[[i]]$unnormalized_ARI,
-                    "Skewness"=rs[[i]]$unnormalized_skew
-                    )   
-   df <- rbind(df, df_temp)
+  df_temp <- data.frame("Field"=field_names[i], 
+                        "Approach"="Unnormalized",
+                        "Resolution" = resolutions, 
+                        "Granularity"=rs[[i]]$unnormalized_granularities, 
+                        "Silhouette.width"=rs[[i]]$unnormalized_silhouttes_means,
+                        "Internal.citations"=rs[[i]]$unnormalized_internal_citations,
+                        "PIA"=rs[[i]]$unnormalized_PIA,
+                        "ARI"=rs[[i]]$unnormalized_ARI,
+                        "Skewness"=rs[[i]]$unnormalized_skew
+  )   
+  df <- rbind(df, df_temp)
  }
  for(i in 1:length(field_names)){
   df_temp <- data.frame("Field"=field_names[i], 
@@ -864,7 +881,7 @@ createAllPlots <- function(field_names, rs, approaches){
   )   
   df <- rbind(df, df_temp)
  }
-
+ 
  return(df)
 }
 
@@ -878,7 +895,7 @@ createAllPlots <- function(field_names, rs, approaches){
 #Function to plot histogram of number of relations per publication
 #------------------------------------------------------------------------------
 plot_hist_relations <- function(field_name, r){
-
+ 
  pubs_cnt1 <- r$pubs[r$pubs$cnt_relations > 0 & r$pubs$cnt_relations <= 100,]
  
  mainname=paste0(field_name, " - Histogram of publication relation counts\n(restricted to 100 relations or less)")
@@ -909,14 +926,6 @@ plot_hist_relations <- function(field_name, r){
 
 #------------------------------------------------------------------------------
 if(getNewResults){
- #--------------------------------------- TEST DATA
- r_bc <- createOutput(
-  pmids_file = paste0(dataFolder, "/bone_cysts_pmids_1995_2021_2023-08-31.csv"),
-  relations_file = paste0(dataFolder, "/bone_cysts_relations_1995_2021_2023-08-31.csv"),
-  field_name = "BC",
-  consoleFile = paste0(outputFolder, "/console_bc.txt")
- )
- saveRDS(r_bc, paste0(outputFolder,"/r_bc.rdata"))
  #--------------------------------------- Social psychology
  r_sp <- createOutput(
   pmids_file = paste0(dataFolder, "/social_psycology_pmids_1995_2021_2023-08-31.csv"),
@@ -1028,7 +1037,7 @@ dev.off()
 sink() 
 sink(type="message")
 #------------------------------------------------------------------------------
-  
+
 # print elapsed time
 endTimeStamp <- Sys.time() - startTimeStamp 
 print(endTimeStamp) 
